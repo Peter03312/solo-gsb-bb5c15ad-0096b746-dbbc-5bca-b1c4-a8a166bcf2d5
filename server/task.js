@@ -15,6 +15,14 @@
 //    （见 server.js 对 /api/sessions 的守卫）；
 //  - 培训师凭管理凭证查看各人尝试记录、最高已结束总分与是否达到及格分；
 //    无已结束尝试时成绩为空（bestScore=null, passed=null）。
+//
+// 尝试作废（监考异常）：
+//  - 培训师凭「管理凭证 + 学员本人参与凭证 + 尝试序号 + 非空原因」可作废某次【已结束】尝试；
+//  - 作废只改有效性：会话状态仍为 ended，原会话路径、得分、绑定冻结版本与历史尝试序号全部保留；
+//  - 仅“未作废”的尝试占用次数名额（有效占用）并参与最高已结束分与及格判定；
+//  - 新尝试序号继续按总会话数 +1 递增，不复用作废序号；作废后名额释放，可再开新尝试；
+//  - 同一次尝试以同一原因重试作废：幂等返回原作废记录，不重复释放名额；以不同原因重试报冲突；
+//  - 进行中尝试不得作废；非法凭证、跨任务或不存在的尝试均不改变数据。
 
 const crypto = require('crypto');
 const { initialMask } = require('./scenario');
@@ -84,12 +92,32 @@ function attemptView(content, s) {
   return {
     attemptNo: s.attempt_no,
     sessionCode: s.code,
-    status: s.status, // active=进行中（未消耗下一次机会） / ended=已结束
+    status: s.status, // active=进行中（未消耗下一次机会） / ended=已结束（可能已作废）
     stepNo: s.step_no,
-    totalScore, // 进行中为当前累计分；已结束为最终总分
+    totalScore, // 进行中为当前累计分；已结束为最终总分（作废后分数仍保留展示）
     startedAt: s.created_at,
     updatedAt: s.updated_at,
+    // 作废标记（监考异常等）：voided=true 时该次不占名额、不参与最高已结束分与及格判定；
+    // 仅有效性变化，状态/路径/得分/冻结版本/历史尝试序号保留不变。
+    voided: !!s.voided_at,
+    voidedAt: s.voided_at || null,
+    voidReason: s.void_reason ?? null,
   };
+}
+
+// 有效占用数：只有“未作废”的尝试占用每人最多尝试次数名额
+// （进行中 + 已结束但未作废）；已作废尝试不占名额。
+function occupiedCount(db, taskId, traineeId) {
+  return db.prepare(`
+    SELECT COUNT(*) AS c FROM sessions
+     WHERE task_id = ? AND task_trainee_id = ? AND voided_at IS NULL
+  `).get(taskId, traineeId).c;
+}
+
+// 已用总次数：含已作废尝试的历史记录数（尝试序号不复用，故等于最大尝试序号）。
+function totalCount(db, taskId, traineeId) {
+  return db.prepare('SELECT COUNT(*) AS c FROM sessions WHERE task_id = ? AND task_trainee_id = ?')
+    .get(taskId, traineeId).c;
 }
 
 /**
@@ -241,24 +269,28 @@ function startAttempt(db, { taskId, token }) {
       `).get(task.id, trainee.id);
       if (active) return { ok: true, resumed: true, session: active };
 
-      const used = db.prepare('SELECT COUNT(*) AS c FROM sessions WHERE task_id = ? AND task_trainee_id = ?')
-        .get(task.id, trainee.id).c;
-      if (used >= task.max_attempts) {
+      // 仅未作废尝试占用名额；已作废尝试释放名额、可再开新尝试。
+      const occupied = occupiedCount(db, task.id, trainee.id);
+      const total = totalCount(db, task.id, trainee.id);
+      if (occupied >= task.max_attempts) {
         return { ok: false, status: 409, errorCode: 'TASK_ATTEMPTS_EXHAUSTED',
-          error: `你的 ${task.max_attempts} 次尝试次数已用完，不能再开始新的尝试（未新建会话）`, attemptsUsed: used };
+          error: `你的 ${task.max_attempts} 次尝试次数已用完，不能再开始新的尝试（未新建会话）`,
+          attemptsUsed: total, attemptsOccupied: occupied };
       }
       if (nowMs() > task.deadline_ms) {
         return { ok: false, status: 409, errorCode: 'TASK_DEADLINE_PASSED',
-          error: `任务已于 ${new Date(task.deadline_ms).toISOString()} 截止，不能再开始新的尝试（未结束的旧尝试仍可续做）`, attemptsUsed: used };
+          error: `任务已于 ${new Date(task.deadline_ms).toISOString()} 截止，不能再开始新的尝试（未结束的旧尝试仍可续做）`,
+          attemptsUsed: total, attemptsOccupied: occupied };
       }
 
+      // 尝试序号按历史尝试总数（含已作废）继续递增，绝不复用作废序号。
       const code = newSessionCode();
       db.prepare(`
         INSERT INTO sessions (code, scenario_id, version, current_node_id, state_mask, step_no, status,
                               path, trainee_name, root_code, task_id, task_trainee_id, attempt_no)
         VALUES (?, ?, ?, ?, ?, 0, 'active', '[]', ?, ?, ?, ?, ?)
       `).run(code, task.scenario_id, task.version, content.startNodeId, initialMask(content),
-        trainee.name, code, task.id, trainee.id, used + 1);
+        trainee.name, code, task.id, trainee.id, total + 1);
       const session = db.prepare('SELECT * FROM sessions WHERE code = ?').get(code);
       return { ok: true, resumed: false, session };
     });
@@ -277,8 +309,8 @@ function startAttempt(db, { taskId, token }) {
   }
   if (!outcome.ok) return { ...outcome, task: publicMeta(db, task), traineeName: trainee.name };
 
-  const used = db.prepare('SELECT COUNT(*) AS c FROM sessions WHERE task_id = ? AND task_trainee_id = ?')
-    .get(task.id, trainee.id).c;
+  const used = totalCount(db, task.id, trainee.id);
+  const occupied = occupiedCount(db, task.id, trainee.id);
   const snapshot = buildSnapshot(content, outcome.session, task.scenario_id, task.version);
   return {
     ok: true,
@@ -287,8 +319,9 @@ function startAttempt(db, { taskId, token }) {
     traineeName: trainee.name,
     attemptNo: outcome.session.attempt_no,
     maxAttempts: task.max_attempts,
-    attemptsUsed: used,
-    attemptsLeft: Math.max(0, task.max_attempts - used),
+    attemptsUsed: used, // 已用总次数（历史尝试记录数，含已作废；作废序号不复用）
+    attemptsOccupied: occupied, // 有效占用数（未作废；决定剩余次数）
+    attemptsLeft: Math.max(0, task.max_attempts - occupied), // 剩余次数按有效占用计算
     session: snapshot,
   };
 }
@@ -307,13 +340,26 @@ function getMine(db, { taskId, token }) {
   }
   const attempts = attemptsOf(db, task.id, trainee.id);
   const active = attempts.find((s) => s.status === 'active') || null;
+  const endedValid = attempts
+    .filter((s) => s.status === 'ended' && !s.voided_at)
+    .map((s) => {
+      let score = 0;
+      try { score = computeTotalScore(content, JSON.parse(s.path || '[]')); } catch (_) { score = 0; }
+      return score;
+    });
+  const bestScore = endedValid.length ? Math.max(...endedValid) : null;
+  const occupied = attempts.filter((s) => !s.voided_at).length;
   return {
     ok: true,
     task: publicMeta(db, task),
     traineeName: trainee.name,
     maxAttempts: task.max_attempts,
-    attemptsUsed: attempts.length,
-    attemptsLeft: Math.max(0, task.max_attempts - attempts.length),
+    attemptsUsed: attempts.length, // 已用总次数（含已作废记录；作废序号保留不复用）
+    attemptsOccupied: occupied, // 有效占用数（未作废）
+    attemptsLeft: Math.max(0, task.max_attempts - occupied), // 剩余次数按有效占用计算
+    // 个人成绩只看“已结束且未作废”的尝试；作废尝试带 voided 标记随 attempts 一并返回。
+    bestScore,
+    passed: bestScore === null ? null : bestScore >= task.pass_score,
     attempts: attempts.map((s) => attemptView(content, s)),
     active: active ? buildSnapshot(content, active, task.scenario_id, task.version) : null,
   };
@@ -339,8 +385,8 @@ function taskMove(db, { taskId, token, optionId, stepNo }) {
   }
   const result = performMove(db, { code: active.code, optionId, stepNo, taskToken: token });
   if (!result.ok) return result;
-  const used = db.prepare('SELECT COUNT(*) AS c FROM sessions WHERE task_id = ? AND task_trainee_id = ?')
-    .get(task.id, trainee.id).c;
+  const used = totalCount(db, task.id, trainee.id);
+  const occupied = occupiedCount(db, task.id, trainee.id);
   return {
     ok: true,
     session: result.session,
@@ -348,13 +394,15 @@ function taskMove(db, { taskId, token, optionId, stepNo }) {
     task,
     attemptNo: result.session.attempt_no,
     attemptsUsed: used,
-    attemptsLeft: Math.max(0, task.max_attempts - used),
+    attemptsOccupied: occupied,
+    attemptsLeft: Math.max(0, task.max_attempts - occupied),
   };
 }
 
 /**
  * 培训师凭管理凭证查看成绩报告：各人尝试记录、最高已结束总分、是否达到及格分。
- * 无已结束尝试时成绩为空（bestScore=null，passed=null）。
+ * 成绩只统计“已结束且未作废”的尝试（作废只改有效性，分数仍随记录保留展示）；
+ * 无有效已结束尝试时成绩为空（bestScore=null，passed=null）。
  */
 function manageReport(db, { taskId, adminToken }) {
   const task = getTask(db, taskId);
@@ -362,6 +410,11 @@ function manageReport(db, { taskId, adminToken }) {
   if (typeof adminToken !== 'string' || task.admin_token !== adminToken) {
     return { ok: false, status: 401, errorCode: 'TASK_ADMIN_TOKEN_INVALID', error: '管理凭证无效（未返回任何成绩）' };
   }
+  return { ok: true, report: buildManageReport(db, task) };
+}
+
+// 组装管理视图（凭证已校验后复用；作废接口返回更新后的个人与汇总成绩）。
+function buildManageReport(db, task) {
   const content = getTaskContent(db, task);
   if (!content) {
     return { ok: false, status: 500, errorCode: 'VERSION_MISSING', error: '任务绑定的冻结版本内容缺失' };
@@ -370,14 +423,19 @@ function manageReport(db, { taskId, adminToken }) {
   const trainees = db.prepare('SELECT * FROM task_trainees WHERE task_id = ? ORDER BY id').all(task.id);
   const views = trainees.map((t) => {
     const attempts = attemptsOf(db, task.id, t.id).map((s) => attemptView(content, s));
-    const endedScores = attempts.filter((a) => a.status === 'ended').map((a) => a.totalScore);
-    const bestScore = endedScores.length ? Math.max(...endedScores) : null; // 最高已结束总分；无已结束尝试为空
+    // 仅“已结束且未作废”的尝试参与最高已结束分与及格判定；作废尝试不计入。
+    const endedScores = attempts.filter((a) => a.status === 'ended' && !a.voided).map((a) => a.totalScore);
+    const bestScore = endedScores.length ? Math.max(...endedScores) : null;
     const active = attempts.find((a) => a.status === 'active') || null;
+    const used = attempts.length; // 已用总次数：历史尝试记录数（含已作废；序号保留不复用）
+    const occupied = attempts.filter((a) => !a.voided).length; // 有效占用：未作废（含进行中）
     return {
       name: t.name,
       token: t.token, // 管理凭证保护下回显参与凭证，便于培训师补发
-      attemptsUsed: attempts.length,
-      attemptsLeft: Math.max(0, task.max_attempts - attempts.length),
+      attemptsUsed: used,
+      attemptsOccupied: occupied,
+      attemptsLeft: Math.max(0, task.max_attempts - occupied), // 剩余次数按有效占用计算
+      voidedCount: used - occupied, // 已作废次数
       activeAttemptNo: active ? active.attemptNo : null,
       bestScore,
       passed: bestScore === null ? null : bestScore >= task.pass_score,
@@ -390,11 +448,117 @@ function manageReport(db, { taskId, adminToken }) {
     task: publicMeta(db, task),
     summary: {
       traineeCount: trainees.length,
-      startedCount: views.filter((v) => v.attemptsUsed > 0).length,
+      startedCount: views.filter((v) => v.attemptsUsed > 0).length, // 有任何历史尝试（含作废）
       passedCount: views.filter((v) => v.passed === true).length,
-      attemptsTotal: views.reduce((sum, v) => sum + v.attemptsUsed, 0),
+      attemptsTotal: views.reduce((sum, v) => sum + v.attemptsUsed, 0), // 已用总次数（含作废）
+      attemptsOccupied: views.reduce((sum, v) => sum + v.attemptsOccupied, 0), // 有效占用总数
+      voidedCount: views.reduce((sum, v) => sum + v.voidedCount, 0), // 已作废总次数
     },
     trainees: views,
+  };
+}
+
+/**
+ * 作废某次已结束尝试（培训师发现监考异常等导致该次尝试无效）。
+ *
+ * 入参：{ taskId, adminToken, token(学员本人参与凭证), attemptNo, reason }
+ *
+ * 规则：
+ *  - 任务不存在 404 TASK_NOT_FOUND；管理凭证无效 401 TASK_ADMIN_TOKEN_INVALID；
+ *    学员参与凭证无效/不属于本任务 401 TASK_TOKEN_INVALID（均不改变数据）；
+ *  - 尝试序号必须为 ≥1 的整数且属于该任务该学员：否则 404 TASK_ATTEMPT_NOT_FOUND
+ *    （跨任务/不存在的尝试一律不改变数据，也不泄露其它任务信息）；
+ *  - 原因必须为非空文本（去空白后非空、≤500 字）：否则 400 TASK_VOID_REASON_INVALID；
+ *  - 进行中尝试不得作废：409 TASK_ATTEMPT_ACTIVE（先续做至结束或由学员完成）；
+ *  - 作废只改有效性：会话仍为 ended，路径/得分/绑定冻结版本/历史尝试序号全部保留，
+ *    仅置 voided_at/void_reason；作废后该次不再占名额，可再开新尝试（新序号继续递增、不复用）；
+ *  - 幂等：同一次尝试以【同一原因】重复作废，返回原作废记录（200，voided=true 但 newlyVoided=false），
+ *    不重复释放名额；以【不同原因】重试报 409 TASK_VOID_REASON_CONFLICT，数据不变。
+ */
+function voidAttempt(db, { taskId, adminToken, token, attemptNo, reason }) {
+  const task = getTask(db, taskId);
+  if (!task) return { ok: false, status: 404, errorCode: 'TASK_NOT_FOUND', error: '训练任务不存在，请核对任务编号' };
+  if (typeof adminToken !== 'string' || !adminToken || task.admin_token !== adminToken) {
+    return { ok: false, status: 401, errorCode: 'TASK_ADMIN_TOKEN_INVALID', error: '管理凭证无效（未作废任何尝试）' };
+  }
+  const trainee = findTrainee(db, taskId, token);
+  if (!trainee) {
+    return { ok: false, status: 401, errorCode: 'TASK_TOKEN_INVALID', error: '学员参与凭证无效或不属于本任务（未作废任何尝试）' };
+  }
+  if (!Number.isInteger(attemptNo) || attemptNo < 1) {
+    return { ok: false, status: 404, errorCode: 'TASK_ATTEMPT_NOT_FOUND',
+      error: `尝试序号非法：${JSON.stringify(attemptNo)}（必须为 ≥1 的整数）` };
+  }
+  const trimmedReason = typeof reason === 'string' ? reason.trim() : '';
+  if (!trimmedReason) {
+    return { ok: false, status: 400, errorCode: 'TASK_VOID_REASON_INVALID',
+      error: '作废原因不能为空：请填写本次监考异常等作废原因（未作废任何尝试）' };
+  }
+  if (trimmedReason.length > 500) {
+    return { ok: false, status: 400, errorCode: 'TASK_VOID_REASON_INVALID',
+      error: `作废原因超长（${trimmedReason.length} 字，最多 500 字），未作废任何尝试` };
+  }
+
+  const session = db.prepare(`
+    SELECT * FROM sessions WHERE task_id = ? AND task_trainee_id = ? AND attempt_no = ?
+  `).get(taskId, trainee.id, attemptNo);
+  if (!session) {
+    // 跨任务或不存在的尝试：不泄露其它任务信息，不改变任何数据
+    return { ok: false, status: 404, errorCode: 'TASK_ATTEMPT_NOT_FOUND',
+      error: `学员「${trainee.name}」在本任务下不存在第 ${attemptNo} 次尝试（未作废任何尝试）` };
+  }
+  if (session.status === 'active') {
+    return { ok: false, status: 409, errorCode: 'TASK_ATTEMPT_ACTIVE',
+      error: `第 ${attemptNo} 次尝试仍在进行中，不能作废（进行中尝试不得作废；可待其结束后再作废）` };
+  }
+  // 已作废：同原因幂等返回原记录；异原因报冲突，绝不改写原因或重复释放名额
+  if (session.voided_at) {
+    if (session.void_reason !== trimmedReason) {
+      return { ok: false, status: 409, errorCode: 'TASK_VOID_REASON_CONFLICT',
+        error: `第 ${attemptNo} 次尝试已作废（原因：${session.void_reason}），与本次原因（${trimmedReason}）不一致；如需保留新原因请核对后使用原原因重试，数据未改变`,
+        existingReason: session.void_reason };
+    }
+    const content = getTaskContent(db, task);
+    const report = buildManageReport(db, task);
+    if (!report.ok) return report;
+    return {
+      ok: true,
+      newlyVoided: false,
+      voided: {
+        taskId, traineeName: trainee.name, attemptNo,
+        sessionCode: session.code,
+        reason: session.void_reason,
+        voidedAt: session.voided_at,
+        totalScore: content ? computeTotalScore(content, JSON.parse(session.path || '[]')) : 0,
+      },
+      trainee: report.trainees.find((v) => v.name === trainee.name),
+      summary: report.summary,
+    };
+  }
+
+  // 首次作废：只置有效性字段（status 仍为 ended，路径/得分/冻结版本/序号不变）。
+  // 置后由“有效占用”口径自然释放名额；无额外名额状态需要维护，重复调用按上面的幂等/冲突处理。
+  db.prepare(`
+    UPDATE sessions SET voided_at = datetime('now'), void_reason = ?, updated_at = datetime('now')
+     WHERE code = ? AND voided_at IS NULL
+  `).run(trimmedReason, session.code);
+  const updated = db.prepare('SELECT * FROM sessions WHERE code = ?').get(session.code);
+
+  const content2 = getTaskContent(db, task);
+  const report = buildManageReport(db, task);
+  if (!report.ok) return report;
+  return {
+    ok: true,
+    newlyVoided: true,
+    voided: {
+      taskId, traineeName: trainee.name, attemptNo,
+      sessionCode: updated.code,
+      reason: updated.void_reason,
+      voidedAt: updated.voided_at,
+      totalScore: content2 ? computeTotalScore(content2, JSON.parse(updated.path || '[]')) : 0,
+    },
+    trainee: report.trainees.find((v) => v.name === trainee.name),
+    summary: report.summary,
   };
 }
 
@@ -407,4 +571,5 @@ module.exports = {
   getMine,
   taskMove,
   manageReport,
+  voidAttempt,
 };

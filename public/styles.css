@@ -281,6 +281,12 @@ code { background: #eef2f6; padding: 1px 6px; border-radius: 4px; font-size: 12p
 .ses-table tr:last-child td { border-bottom: none; }
 .status-ended { color: var(--muted); }
 .status-active { color: var(--ok); font-weight: 600; }
+.status-voided { color: var(--err); font-weight: 600; }
+.attempt-voided { opacity: .72; }
+.void-reason { color: var(--err); font-size: 12px; }
+.void-form { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.btn-void { color: var(--err); }
+.btn-void:not(:disabled):hover { border-color: var(--err); }
 
 /* ---------- 复盘分叉 / 溯源对照 ---------- */
 .ses-actions { white-space: nowrap; }

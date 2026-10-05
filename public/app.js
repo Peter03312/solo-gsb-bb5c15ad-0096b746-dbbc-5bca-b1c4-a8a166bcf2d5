@@ -1740,20 +1740,25 @@ async function refreshMyTaskSummary(taskId, token) {
     const rows = r.attempts.map((a) => `
       <tr>
         <td>第 ${a.attemptNo} 次</td>
-        <td class="${a.status === 'active' ? 'status-active' : 'status-ended'}">${a.status === 'active' ? '进行中' : '已结束'}</td>
+        <td class="${a.status === 'active' ? 'status-active' : (a.voided ? 'status-voided' : 'status-ended')}">${a.status === 'active' ? '进行中' : (a.voided ? '已作废' : '已结束')}</td>
         <td>${a.stepNo}</td>
         <td><b class="${scoreClass(a.totalScore)}">${a.totalScore}</b></td>
         <td>${fmtTime(a.startedAt)}</td>
+        <td>${a.voided ? `<span class="void-reason" title="作废原因">⛔ ${esc(a.voidReason || '')}</span>` : ''}</td>
       </tr>`).join('');
+    const gradeLine = r.bestScore === null
+      ? '<span class="muted">尚无有效已结束尝试，成绩为空</span>'
+      : `最高已结束总分 <b class="${scoreClass(r.bestScore)}">${r.bestScore}</b> · ${r.passed ? '<span class="cov-tag yes">已及格</span>' : '<span class="cov-tag no">未及格</span>'}`;
     box.innerHTML = `
       <div class="hint" style="margin-bottom:6px">
         ${esc(r.traineeName || '')} · ${esc(r.task.scenarioTitle || '')} v${r.task.version}
-        · 已用 ${r.attemptsUsed}/${r.maxAttempts} 次 · 及格分 ${r.task.passScore}
+        · 已用 ${r.attemptsUsed}/${r.maxAttempts} 次（有效占用 ${r.attemptsOccupied}，剩余 ${r.attemptsLeft}；作废不占名额）· 及格分 ${r.task.passScore}
+        · ${gradeLine}
         · ${r.task.expired ? '<b style="color:var(--err)">已截止（不能开新尝试，可续做未结束的会话）</b>' : `截止 ${new Date(r.task.deadlineMs).toLocaleString('zh-CN', { hour12: false })}`}
       </div>
       ${r.attempts.length ? `
         <table class="ses-table">
-          <thead><tr><th>尝试</th><th>状态</th><th>步数</th><th>得分</th><th>开始时间</th></tr></thead>
+          <thead><tr><th>尝试</th><th>状态</th><th>步数</th><th>得分</th><th>开始时间</th><th>作废</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>` : '<div class="muted">还没有任何尝试。</div>'}`;
     box.style.display = '';
@@ -1869,37 +1874,45 @@ function renderManage(r) {
       <div class="cov-stat"><div class="cov-num">${s.startedCount}</div><div class="muted">已开始</div></div>
       <div class="cov-stat covered"><div class="cov-num">${s.passedCount}</div><div class="muted">已及格</div></div>
       <div class="cov-stat"><div class="cov-num">${s.attemptsTotal}</div><div class="muted">尝试总次数</div></div>
+      <div class="cov-stat"><div class="cov-num">${s.attemptsOccupied}</div><div class="muted">有效占用</div></div>
+      <div class="cov-stat"><div class="cov-num">${s.voidedCount}</div><div class="muted">已作废</div></div>
     </div>`;
 
   $('#tm-trainees').innerHTML = `
     <table class="cov-table">
-      <thead><tr><th>学员</th><th>参与凭证</th><th>已用次数</th><th>当前状态</th><th>最高已结束总分</th><th>是否及格</th><th>尝试明细</th></tr></thead>
+      <thead><tr><th>学员</th><th>参与凭证</th><th>已用/有效占用/剩余</th><th>当前状态</th><th>最高有效已结束分</th><th>是否及格</th><th>尝试明细</th></tr></thead>
       <tbody>
         ${r.trainees.map((tr) => {
           const best = tr.bestScore === null
-            ? '<span class="muted">—（无已结束尝试）</span>'
+            ? '<span class="muted">—（无有效已结束尝试）</span>'
             : `<b class="${scoreClass(tr.bestScore)}">${tr.bestScore}</b>`;
           const pass = tr.passed === null
             ? '<span class="muted">—</span>'
             : (tr.passed ? '<span class="cov-tag yes">已及格</span>' : '<span class="cov-tag no">未及格</span>');
           const cur = tr.activeAttemptNo !== null
             ? `<span class="status-active">第 ${tr.activeAttemptNo} 次进行中</span>`
-            : (tr.attemptsLeft > 0 ? `<span class="muted">可再试 ${tr.attemptsLeft} 次</span>` : '<span class="status-ended">次数已用完</span>');
+            : (tr.attemptsLeft > 0 ? `<span class="muted">可再试 ${tr.attemptsLeft} 次</span>` : '<span class="status-ended">有效次数已用完</span>');
           const detail = tr.attempts.length
-            ? `<details><summary>${tr.attemptsUsed} 次记录</summary>
+            ? `<details><summary>${tr.attemptsUsed} 次记录${tr.voidedCount ? `（含 ${tr.voidedCount} 次作废）` : ''}</summary>
                 <ol class="path-list" style="margin-top:6px">
                   ${tr.attempts.map((a) => `
-                    <li>第 ${a.attemptNo} 次 · ${a.status === 'active' ? '<span class="status-active">进行中</span>' : '已结束'}
-                      · ${a.stepNo} 步 · 得分 <b class="${scoreClass(a.totalScore)}">${a.totalScore}</b>
+                    <li class="${a.voided ? 'attempt-voided' : ''}">第 ${a.attemptNo} 次 · ${a.status === 'active' ? '<span class="status-active">进行中</span>' : (a.voided ? '<span class="status-voided">⛔ 已作废</span>' : '已结束')}
+                      · ${a.stepNo} 步 · 得分 <b class="${scoreClass(a.totalScore)}">${a.totalScore}</b>${a.voided ? '（不计入成绩、不占名额）' : ''}
+                      ${a.voided ? `<span class="pl-sub void-reason">作废原因：${esc(a.voidReason || '')} · 作废时间 ${fmtTime(a.voidedAt)}</span>` : ''}
                       <span class="pl-sub">开始 ${fmtTime(a.startedAt)} · 最近推进 ${fmtTime(a.updatedAt)} · 会话 <code>${esc(a.sessionCode)}</code></span>
                     </li>`).join('')}
                 </ol>
+                <div class="void-form" data-task-id="${esc(manageCtx.taskId)}" data-trainee-token="${esc(tr.token)}" data-trainee-name="${esc(tr.name)}" style="margin-top:6px">
+                  <select class="void-attempt-select" aria-label="选择要作废的尝试序号"></select>
+                  <input class="void-reason-input" type="text" maxlength="500" placeholder="作废原因（必填，如：监考异常中断）" style="min-width:220px">
+                  <button class="btn sm btn-void" type="button">⛔ 作废该次已结束尝试</button>
+                </div>
               </details>`
             : '<span class="muted">尚无尝试</span>';
-          return `<tr>
+          return `<tr${tr.voidedCount ? ' class="row-has-void"' : ''}>
             <td><b>${esc(tr.name)}</b></td>
             <td><code style="user-select:all">${esc(tr.token)}</code></td>
-            <td>${tr.attemptsUsed}/${t.maxAttempts}</td>
+            <td>${tr.attemptsUsed} / <b>${tr.attemptsOccupied}</b> / ${tr.attemptsLeft}</td>
             <td>${cur}</td>
             <td>${best}</td>
             <td>${pass}</td>
@@ -1908,7 +1921,47 @@ function renderManage(r) {
         }).join('')}
       </tbody>
     </table>`;
+
+  // 填充作废下拉：仅列出“已结束且未作废”的尝试（进行中不得作废）
+  document.querySelectorAll('.void-form').forEach((form) => {
+    const trName = form.dataset.traineeName;
+    const tr = r.trainees.find((x) => x.name === trName);
+    const sel = form.querySelector('.void-attempt-select');
+    const endable = tr ? tr.attempts.filter((a) => a.status === 'ended' && !a.voided) : [];
+    if (!endable.length) {
+      sel.innerHTML = '<option value="">无可作废的已结束尝试</option>';
+      form.querySelector('.btn-void').disabled = true;
+      form.querySelector('.void-reason-input').disabled = true;
+    } else {
+      sel.innerHTML = endable.map((a) => `<option value="${a.attemptNo}">第 ${a.attemptNo} 次（${a.stepNo} 步，${a.totalScore} 分）</option>`).join('');
+    }
+  });
 }
+
+// 作废已结束尝试（管理凭证 + 该学员参与凭证 + 尝试序号 + 非空原因）
+$('#tm-trainees').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.btn-void');
+  if (!btn) return;
+  const form = btn.closest('.void-form');
+  const attemptNo = parseInt(form.querySelector('.void-attempt-select').value, 10);
+  const reason = form.querySelector('.void-reason-input').value.trim();
+  if (!Number.isInteger(attemptNo)) return toast('请选择要作废的已结束尝试（进行中尝试不得作废）', 'err');
+  if (!reason) return toast('请填写作废原因（非空）', 'err');
+  if (!confirm(`确认作废 ${form.dataset.traineeName} 的第 ${attemptNo} 次尝试？\n\n作废只改有效性：原路径、得分与尝试序号保留，但该次不再计入成绩、不再占用名额。`)) return;
+  btn.disabled = true;
+  try {
+    const r = await api(`/api/tasks/${encodeURIComponent(form.dataset.taskId)}/attempts/${attemptNo}/void`, {
+      method: 'POST',
+      body: { adminToken: manageCtx.adminToken, token: form.dataset.traineeToken, reason },
+    });
+    toast(r.newlyVoided ? `已作废第 ${attemptNo} 次尝试（名额已释放，成绩已更新）` : `该尝试此前已以相同原因作废，返回原记录（未重复释放名额）`, 'ok');
+    form.querySelector('.void-reason-input').value = '';
+    refreshManage();
+  } catch (err) {
+    btn.disabled = false;
+    toast(err.message, 'err');
+  }
+});
 
 // ====================== 初始化 ======================
 

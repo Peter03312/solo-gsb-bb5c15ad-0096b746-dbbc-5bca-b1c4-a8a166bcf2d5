@@ -91,6 +91,11 @@ function buildSnapshot(content, session, scenarioId, version) {
     roomCode: session.room_code || null, // 非空表示该会话是共识演练房间的共享会话
     taskId: session.task_id || null, // 非空表示该会话是训练任务的某次尝试（须凭参与凭证访问）
     attemptNo: session.attempt_no ?? null, // 任务会话的第几次尝试（非任务会话为 null）
+    // 作废（监考异常）：voided=true 表示该次已结束尝试已作废——只改有效性，
+    // 路径/得分/冻结版本/尝试序号均保留；作废尝试不占名额、不参与最高已结束分与及格判定。
+    voided: !!session.voided_at,
+    voidedAt: session.voided_at || null,
+    voidReason: session.void_reason ?? null,
     lineage: {
       rootCode: session.root_code || session.code,
       parentCode: session.parent_code || null,

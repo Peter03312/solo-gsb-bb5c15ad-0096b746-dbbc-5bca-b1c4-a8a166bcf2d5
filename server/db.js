@@ -181,6 +181,11 @@ function initSchema() {
   addColumn('task_id', 'task_id TEXT');
   addColumn('task_trainee_id', 'task_trainee_id INTEGER');
   addColumn('attempt_no', 'attempt_no INTEGER');
+  // 尝试作废（监考异常等）：只改“有效性”，不改变会话状态/路径/得分/冻结版本/历史尝试序号。
+  // voided_at 非空即该次已结束尝试已被培训师作废：不占名额、不参与最高已结束分与及格判定；
+  // void_reason 为作废原因（非空）。进行中尝试不得作废，故只有已结束会话可能非空。
+  addColumn('voided_at', 'voided_at TEXT');
+  addColumn('void_reason', 'void_reason TEXT');
   db.exec(`CREATE INDEX IF NOT EXISTS idx_room_steps_open ON room_steps(room_code, status, deadline_ms)`);
   // 存量会话（含建表后尚未回填 root_code 的库）：无溯源信息即为原始会话，根是自身
   db.exec(`UPDATE sessions SET root_code = code WHERE root_code IS NULL`);
