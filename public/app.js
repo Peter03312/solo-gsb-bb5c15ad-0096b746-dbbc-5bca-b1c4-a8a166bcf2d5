@@ -227,6 +227,7 @@ function enterTaskSession(r) {
     attemptNo: r.attemptNo,
     maxAttempts: r.maxAttempts,
     attemptsUsed: r.attemptsUsed,
+    validAttemptsUsed: r.validAttemptsUsed ?? r.attemptsUsed,
     attemptsLeft: r.attemptsLeft,
   };
   currentSession = { ...r.session, scenarioTitle: r.task.scenarioTitle };
@@ -403,6 +404,7 @@ $('#option-list').addEventListener('click', async (e) => {
     if (isTask) {
       // 同步任务计数信息（次数/剩余），供结束横幅与元信息使用
       sessionCtx.attemptsUsed = snap.attemptsUsed ?? sessionCtx.attemptsUsed;
+      sessionCtx.validAttemptsUsed = snap.validAttemptsUsed ?? sessionCtx.validAttemptsUsed;
       sessionCtx.attemptsLeft = snap.attemptsLeft ?? sessionCtx.attemptsLeft;
       if (snap.task) sessionCtx.task = snap.task;
     }
@@ -1737,18 +1739,27 @@ async function refreshMyTaskSummary(taskId, token) {
   if (!taskId || !token) { box.style.display = 'none'; return; }
   try {
     const r = await api(`/api/tasks/${encodeURIComponent(taskId)}/my?token=${encodeURIComponent(token)}`);
+    const statusCell = (a) => {
+      if (a.voided) {
+        return `<span class="status-voided" title="作废原因：${esc(a.voidReason || '')}">⛔ 已作废</span>`;
+      }
+      return a.status === 'active'
+        ? '<span class="status-active">进行中</span>'
+        : '<span class="status-ended">已结束</span>';
+    };
     const rows = r.attempts.map((a) => `
-      <tr>
-        <td>第 ${a.attemptNo} 次</td>
-        <td class="${a.status === 'active' ? 'status-active' : 'status-ended'}">${a.status === 'active' ? '进行中' : '已结束'}</td>
+      <tr${a.voided ? ' class="row-voided"' : ''}>
+        <td>第 ${a.attemptNo} 次${a.voided ? ' <span class="muted">（序号保留不回收）</span>' : ''}</td>
+        <td>${statusCell(a)}</td>
         <td>${a.stepNo}</td>
-        <td><b class="${scoreClass(a.totalScore)}">${a.totalScore}</b></td>
-        <td>${fmtTime(a.startedAt)}</td>
+        <td><b class="${scoreClass(a.totalScore)}">${a.totalScore}</b>${a.voided ? ' <span class="muted">（不参与成绩）</span>' : ''}</td>
+        <td>${fmtTime(a.startedAt)}${a.voided ? `<div class="muted" style="font-size:12px">作废：${esc(a.voidReason || '')}</div>` : ''}</td>
       </tr>`).join('');
     box.innerHTML = `
       <div class="hint" style="margin-bottom:6px">
         ${esc(r.traineeName || '')} · ${esc(r.task.scenarioTitle || '')} v${r.task.version}
-        · 已用 ${r.attemptsUsed}/${r.maxAttempts} 次 · 及格分 ${r.task.passScore}
+        · 已用 ${r.attemptsUsed}/${r.maxAttempts} 次（含作废 ${r.attemptsUsed - r.validAttemptsUsed}）
+        · <b>有效占用 ${r.validAttemptsUsed}，剩余 ${r.attemptsLeft}</b> 次 · 及格分 ${r.task.passScore}
         · ${r.task.expired ? '<b style="color:var(--err)">已截止（不能开新尝试，可续做未结束的会话）</b>' : `截止 ${new Date(r.task.deadlineMs).toLocaleString('zh-CN', { hour12: false })}`}
       </div>
       ${r.attempts.length ? `
@@ -1868,30 +1879,46 @@ function renderManage(r) {
       <div class="cov-stat"><div class="cov-num">${s.traineeCount}</div><div class="muted">学员人数</div></div>
       <div class="cov-stat"><div class="cov-num">${s.startedCount}</div><div class="muted">已开始</div></div>
       <div class="cov-stat covered"><div class="cov-num">${s.passedCount}</div><div class="muted">已及格</div></div>
-      <div class="cov-stat"><div class="cov-num">${s.attemptsTotal}</div><div class="muted">尝试总次数</div></div>
+      <div class="cov-stat"><div class="cov-num">${s.attemptsTotal}</div><div class="muted">尝试总次数（含作废 ${s.voidedCount}）</div></div>
+      <div class="cov-stat"><div class="cov-num">${s.validAttemptsTotal}</div><div class="muted">有效占用总数</div></div>
     </div>`;
+
+  const attemptStatus = (a) => {
+    if (a.voided) {
+      return `<span class="status-voided" title="作废原因：${esc(a.voidReason || '')}">⛔ 已作废</span>`;
+    }
+    return a.status === 'active'
+      ? '<span class="status-active">进行中</span>'
+      : '<span class="status-ended">已结束</span>';
+  };
 
   $('#tm-trainees').innerHTML = `
     <table class="cov-table">
-      <thead><tr><th>学员</th><th>参与凭证</th><th>已用次数</th><th>当前状态</th><th>最高已结束总分</th><th>是否及格</th><th>尝试明细</th></tr></thead>
+      <thead><tr><th>学员</th><th>参与凭证</th><th>已用/有效/剩余</th><th>当前状态</th><th>最高有效已结束分</th><th>是否及格</th><th>尝试明细</th></tr></thead>
       <tbody>
         ${r.trainees.map((tr) => {
           const best = tr.bestScore === null
-            ? '<span class="muted">—（无已结束尝试）</span>'
+            ? '<span class="muted">—（无有效已结束尝试）</span>'
             : `<b class="${scoreClass(tr.bestScore)}">${tr.bestScore}</b>`;
           const pass = tr.passed === null
             ? '<span class="muted">—</span>'
             : (tr.passed ? '<span class="cov-tag yes">已及格</span>' : '<span class="cov-tag no">未及格</span>');
           const cur = tr.activeAttemptNo !== null
             ? `<span class="status-active">第 ${tr.activeAttemptNo} 次进行中</span>`
-            : (tr.attemptsLeft > 0 ? `<span class="muted">可再试 ${tr.attemptsLeft} 次</span>` : '<span class="status-ended">次数已用完</span>');
+            : (tr.attemptsLeft > 0 ? `<span class="muted">可再试 ${tr.attemptsLeft} 次</span>` : '<span class="status-ended">有效次数已用完</span>');
           const detail = tr.attempts.length
-            ? `<details><summary>${tr.attemptsUsed} 次记录</summary>
+            ? `<details><summary>${tr.attemptsUsed} 次记录（作废 ${tr.voidedCount}）</summary>
                 <ol class="path-list" style="margin-top:6px">
                   ${tr.attempts.map((a) => `
-                    <li>第 ${a.attemptNo} 次 · ${a.status === 'active' ? '<span class="status-active">进行中</span>' : '已结束'}
+                    <li${a.voided ? ' class="row-voided"' : ''}>第 ${a.attemptNo} 次 · ${attemptStatus(a)}
                       · ${a.stepNo} 步 · 得分 <b class="${scoreClass(a.totalScore)}">${a.totalScore}</b>
+                      ${a.voided ? '<span class="muted">（原得分保留，不参与成绩与名额）</span>' : ''}
                       <span class="pl-sub">开始 ${fmtTime(a.startedAt)} · 最近推进 ${fmtTime(a.updatedAt)} · 会话 <code>${esc(a.sessionCode)}</code></span>
+                      ${a.voided
+                        ? `<span class="pl-sub">⛔ 作废于 ${fmtTime(a.voidedAt)} · 原因：${esc(a.voidReason || '')}</span>`
+                        : (a.status === 'ended'
+                          ? `<button class="btn sm btn-void-attempt" data-attempt="${a.attemptNo}" data-name="${esc(tr.name)}" data-token="${esc(tr.token)}" style="margin-top:4px">⛔ 作废（监考异常）</button>`
+                          : '<span class="pl-sub muted">进行中尝试不得作废</span>')}
                     </li>`).join('')}
                 </ol>
               </details>`
@@ -1899,7 +1926,7 @@ function renderManage(r) {
           return `<tr>
             <td><b>${esc(tr.name)}</b></td>
             <td><code style="user-select:all">${esc(tr.token)}</code></td>
-            <td>${tr.attemptsUsed}/${t.maxAttempts}</td>
+            <td>${tr.attemptsUsed} / <b>${tr.validAttemptsUsed}</b> / ${tr.attemptsLeft}</td>
             <td>${cur}</td>
             <td>${best}</td>
             <td>${pass}</td>
@@ -1907,8 +1934,43 @@ function renderManage(r) {
           </tr>`;
         }).join('')}
       </tbody>
-    </table>`;
+    </table>
+    <p class="hint" style="margin-top:8px">
+      作废仅改变尝试有效性：原会话路径、得分、绑定版本与历史尝试序号保留；仅有效（未作废）尝试占用名额、
+      参与最高已结束分与及格判定；新尝试序号继续递增不复用；进行中尝试不得作废；同原因重试幂等，异原因冲突。
+      作废不改变任务截止时间——截止后学员只能续做原有进行中尝试。
+    </p>`;
 }
+
+// 管理视图内“作废”按钮：凭管理凭证 + 该学员参与凭证 + 尝试序号 + 非空原因作废
+$('#tm-trainees').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.btn-void-attempt');
+  if (!btn || !manageCtx) return;
+  const attemptNo = Number(btn.dataset.attempt);
+  const name = btn.dataset.name || '';
+  const token = btn.dataset.token || '';
+  const reason = window.prompt(`作废「${name}」第 ${attemptNo} 次尝试，请填写监考异常原因（不能为空）：`);
+  if (reason === null) return; // 取消
+  if (!reason.trim()) { toast('作废原因不能为空，未作废', 'err'); return; }
+  btn.disabled = true;
+  try {
+    const r = await api(`/api/tasks/${encodeURIComponent(manageCtx.taskId)}/void`, {
+      method: 'POST',
+      body: { adminToken: manageCtx.adminToken, token, attemptNo, reason: reason.trim() },
+    });
+    toast(r.idempotent
+      ? `第 ${attemptNo} 次此前已按相同原因作废（幂等返回原记录，未重复释放名额）`
+      : `已作废第 ${attemptNo} 次尝试，有效占用与成绩已更新`, 'ok');
+    await refreshManage();
+  } catch (err) {
+    btn.disabled = false;
+    if (err.data && err.data.existingVoid) {
+      toast(`作废冲突：该尝试已作废，原因为「${err.data.existingVoid.reason}」，与本次原因不一致`, 'err');
+    } else {
+      toast(err.message, 'err');
+    }
+  }
+});
 
 // ====================== 初始化 ======================
 

@@ -342,9 +342,13 @@ app.get('/api/sessions/:code', (req, res) => {
   if (!versionRow) return res.status(500).json({ error: '版本内容缺失' });
   const content = JSON.parse(versionRow.content);
   const sc = db.prepare('SELECT title FROM scenarios WHERE id = ?').get(session.scenario_id);
+  const v = taskOps.voidOfSession(db, session.code);
   res.json({
     ...buildSnapshot(content, session, session.scenario_id, session.version),
     scenarioTitle: sc ? sc.title : null,
+    voided: !!v, // 任务尝试作废标记（仅任务会话可能为 true；原路径/得分保留）
+    voidReason: v ? v.reason : null,
+    voidedAt: v ? v.created_at : null,
   });
 });
 
@@ -655,6 +659,7 @@ app.post('/api/tasks/:id/start', (req, res) => {
       errorCode: result.errorCode,
       task: result.task || null,
       attemptsUsed: result.attemptsUsed ?? null,
+      validAttemptsUsed: result.validAttemptsUsed ?? null,
     });
   }
   res.status(result.resumed ? 200 : 201).json({
@@ -665,6 +670,7 @@ app.post('/api/tasks/:id/start', (req, res) => {
     attemptNo: result.attemptNo,
     maxAttempts: result.maxAttempts,
     attemptsUsed: result.attemptsUsed,
+    validAttemptsUsed: result.validAttemptsUsed, // 有效占用数；剩余次数按此计算（attemptsUsed 含已作废）
     attemptsLeft: result.attemptsLeft,
     session: result.session,
   });
@@ -681,6 +687,7 @@ app.get('/api/tasks/:id/my', (req, res) => {
     traineeName: result.traineeName,
     maxAttempts: result.maxAttempts,
     attemptsUsed: result.attemptsUsed,
+    validAttemptsUsed: result.validAttemptsUsed, // 有效占用数（attemptsUsed 含已作废）
     attemptsLeft: result.attemptsLeft,
     attempts: result.attempts,
     active: result.active,
@@ -714,6 +721,7 @@ app.post('/api/tasks/:id/move', (req, res) => {
     task: taskOps.publicMeta(db, result.task),
     attemptNo: result.attemptNo,
     attemptsUsed: result.attemptsUsed,
+    validAttemptsUsed: result.validAttemptsUsed,
     attemptsLeft: result.attemptsLeft,
     lastMove: last ? {
       step: last.step,
@@ -733,6 +741,44 @@ app.get('/api/tasks/:id/manage', (req, res) => {
   const result = taskOps.manageReport(db, { taskId: req.params.id, adminToken: token });
   if (!result.ok) return res.status(result.status).json({ error: result.error, errorCode: result.errorCode });
   res.json({ ok: true, task: result.task, summary: result.summary, trainees: result.trainees });
+});
+
+// 培训师作废某条“已结束”尝试（监考异常无效）：
+// {adminToken 管理凭证, token 学员参与凭证, attemptNo 尝试序号, reason 非空作废原因}。
+// 首次作废 201：只改有效性（路径/得分/冻结版本/历史尝试序号保留），名额按有效占用释放，
+// 返回作废记录与更新后的该学员个人成绩、任务汇总；同一次同原因重试 200 幂等返回原记录，
+// 异原因 409 TASK_VOID_REASON_CONFLICT；进行中尝试 409 TASK_ATTEMPT_ACTIVE 不得作废。
+app.post('/api/tasks/:id/void', (req, res) => {
+  const { adminToken, token, attemptNo, reason } = req.body || {};
+  if (typeof adminToken !== 'string' || !adminToken) {
+    return res.status(400).json({ error: '缺少 adminToken（管理凭证）', errorCode: 'TASK_ADMIN_TOKEN_REQUIRED' });
+  }
+  if (typeof token !== 'string' || !token) {
+    return res.status(400).json({ error: '缺少 token（该学员的个人参与凭证）', errorCode: 'TASK_TOKEN_REQUIRED' });
+  }
+  if (!Number.isInteger(attemptNo)) {
+    return res.status(400).json({ error: '缺少或非法的 attemptNo（必须为 ≥1 的整数）', errorCode: 'TASK_ATTEMPT_NO_INVALID' });
+  }
+  if (typeof reason !== 'string' || !reason.trim()) {
+    return res.status(400).json({ error: '缺少非空的 reason（作废原因/监考异常说明）', errorCode: 'TASK_VOID_REASON_REQUIRED' });
+  }
+  const result = taskOps.voidAttempt(db, {
+    taskId: req.params.id, adminToken, token, attemptNo, reason,
+  });
+  if (!result.ok) {
+    return res.status(result.status).json({
+      error: result.error,
+      errorCode: result.errorCode,
+      existingVoid: result.existingVoid || null,
+    });
+  }
+  return res.status(result.status).json({
+    ok: true,
+    idempotent: result.idempotent,
+    voidRecord: result.voidRecord,
+    trainee: result.trainee,
+    summary: result.summary,
+  });
 });
 
 // 兜底：未匹配的 /api 返回 JSON 404

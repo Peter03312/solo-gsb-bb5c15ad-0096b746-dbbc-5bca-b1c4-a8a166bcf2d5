@@ -281,6 +281,10 @@ code { background: #eef2f6; padding: 1px 6px; border-radius: 4px; font-size: 12p
 .ses-table tr:last-child td { border-bottom: none; }
 .status-ended { color: var(--muted); }
 .status-active { color: var(--ok); font-weight: 600; }
+.status-voided { color: var(--err); font-weight: 600; }
+tr.row-voided, li.row-voided { opacity: 0.72; }
+tr.row-voided td { background: var(--err-bg, #fdecec); }
+.btn-void-attempt { color: var(--err); border-color: var(--err); }
 
 /* ---------- 复盘分叉 / 溯源对照 ---------- */
 .ses-actions { white-space: nowrap; }

@@ -17,7 +17,7 @@
 - **限时模式（可选）**：开房时可勾选限时并填写**每步时长（30～3600 秒，整数）**，省略该设置的旧用法**完全保持原样**。限时房间在**每步开始时持久记录截止时间**，页面显示**截止时间与每秒刷新的剩余时间**；**截止前**可改票或由主持人**提前结算**，**到点后**拒绝本步一切新票/改票——**有票**则沿用既有多数决、同票顺序、路径推进与计分规则**自动结算**（`kind=auto`），并**从实际推进时刻**为下一步计满时长；**零票**时不推进、停在本步并**标记待重开**，主持人可凭**主持凭证 + 所见步号**把本步**重开完整时长**。即使**无人访问或服务重启**，启动时与运行中定时扫描也会**补办到期结算/暂停**；自动结算、投票、手动结算与重开相遇时由事务与唯一约束保证**不会重复推进**，失败一律返回原因和当前步号，且不改票数、路径、得分
 - **盲投模式（可选）**：开房时可用**布尔值** `blind` 选择盲投（`true`/`false`）；**未指定**该字段及**存量房间维持现有公开投票规则**，传**非布尔值**（`null`、字符串、数字等）返回 `400 BLIND_INVALID` 且**不建房**。盲投房间在**当前步结算前**，无论**围观者、学员还是主持人都只看到已投人数**，不显示各选项票数或逐人选项（快照中各选项 `votes=null`、主持视图 `votes=null`）；学员凭**成员凭证仍可查看、修改自己的票**（`myVote`），主持人仍可查看**成员名单**（`members`，不含各自选项）。主持人**提前结算**或到点**自动结算**后，公布该步**各选项票数与获胜处置**（`settlements` / 已结算路径），但**始终不公开姓名与选项的对应关系**（留痕与响应均不含姓名）。**零票到点暂停及重开期间继续保密**，**已结算步的结果保持可见**；截止、同票顺序、路径推进与计分规则沿用现状。**盲投选择创建后不可更改**。盲投可与限时模式叠加使用
 - **处置覆盖报告**：培训师可针对任一**已发布冻结版本**查看覆盖情况——以该版本从初态可达的「**节点 × 进入时现场状态 × 可选选项**」组合为覆盖项，给出**总数 / 已覆盖 / 未覆盖**与逐项明细，可一键**只看未覆盖项**，方便找到学员还没练到的处置
-- **训练任务**：培训师选定**已发布冻结版本、截止时间、每人最多尝试次数、及格分与学员名单**建立训练任务（非法配置**整次拒绝**），获得**管理凭证**及各学员的**独立参与凭证**；学员凭个人凭证**开始或续做**单人演练——**有未结束尝试时重复开始返回原会话**（不多建会话、不多扣次数），**结束后才消耗下一次**，**截止后不能开新尝试但可续做旧会话**；任务会话沿**冻结版本**的选项条件、步号与计分规则推进，**只能凭本人凭证查看和操作**（普通会话列表与入口一律拒绝任务会话）；培训师凭管理凭证查看**各人尝试记录、最高已结束总分与是否达到及格分**（无已结束尝试时成绩为空）
+- **训练任务**：培训师选定**已发布冻结版本、截止时间、每人最多尝试次数、及格分与学员名单**建立训练任务（非法配置**整次拒绝**），获得**管理凭证**及各学员的**独立参与凭证**；学员凭个人凭证**开始或续做**单人演练——**有未结束尝试时重复开始返回原会话**（不多建会话、不多扣次数），**结束后才消耗下一次**，**截止后不能开新尝试但可续做旧会话**；任务会话沿**冻结版本**的选项条件、步号与计分规则推进，**只能凭本人凭证查看和操作**（普通会话列表与入口一律拒绝任务会话）；培训师凭管理凭证查看**各人尝试记录、最高已结束总分与是否达到及格分**（无有效已结束尝试时成绩为空）。**尝试作废（监考异常）**：培训师可凭**任务编号 + 管理凭证 + 该学员参与凭证 + 尝试序号 + 非空原因**，把某次**已结束**尝试作废；作废**只改有效性**——原会话路径、得分、绑定冻结版本与历史尝试序号一律保留，仅**有效（未作废）**尝试占用次数、参与最高已结束分与及格判定，**新尝试序号继续递增不复用作废序号**；同一尝试**同原因重试幂等返回原记录**（200，不重复释放名额），**异原因报冲突**（409 `TASK_VOID_REASON_CONFLICT`）；**进行中尝试不得作废**；**已用总次数与有效占用数分别返回，剩余次数按有效占用计算**；作废不改变截止时间（截止后仅可续做原有进行中尝试）；学员仅凭本人凭证可见含**作废标记**的个人记录，培训师管理视图同步更新；非法凭证、跨任务或不存在的尝试一律不改数据。
 - 草稿中的**无效引用**（不存在的状态/目标节点）与**矛盾条件**（同一状态同时要求是和否）在保存时即被拒绝；**非整数或越界分值**同样在保存时拒绝
 
 ---
@@ -90,7 +90,7 @@ npm start
 | `APP_PORT`（仅 Compose） | `8080` | 宿主机映射端口，改它即可，无需改 Dockerfile |
 | `TZ` | `Asia/Shanghai` | 容器时区（影响时间显示） |
 
-数据库表：`scenarios`（情境及草稿）、`versions`（每次发布冻结的完整内容）、`sessions`（学员会话：步号、状态位掩码、已走路径、绑定版本，复盘分叉溯源列 `parent_code` / `fork_step_no` / `root_code`，房间会话标记列 `room_code`，训练任务列 `task_id` / `task_trainee_id` / `attempt_no`——非空即为任务的计次尝试会话）、`rooms`（共识演练房间：加入码、主持凭证、绑定冻结版本与共享会话，限时模式列 `step_duration`，NULL 为旧用法；盲投列 `blind_vote`，1=盲投、0=公开，存量房间默认 0）、`room_members`（房间成员及成员凭证）、`room_votes`（按「房间 × 步号 × 成员」记票，每人每步只计最后一票）、`room_steps`（限时房间每步一条计时记录：持久化截止时间 `deadline_ms`、状态 `open`/`awaiting_reopen`、重开次数）、`room_settlements`（每步结算留痕：获胜选项与各选项票数，`kind` 为 `manual`/`auto`；任何房间都不留存姓名↔选项对应）、`tasks`（训练任务：管理凭证 `admin_token`、绑定冻结版本、截止时间 `deadline_ms`、每人最多尝试次数 `max_attempts`、及格分 `pass_score`）、`task_trainees`（任务学员名单：姓名任务内唯一，个人参与凭证 `token` 全局唯一）。另有唯一部分索引 `idx_sessions_task_active`（`sessions(task_id, task_trainee_id) WHERE status='active'`）保证同一学员在同一任务下至多一条进行中的尝试会话。
+数据库表：`scenarios`（情境及草稿）、`versions`（每次发布冻结的完整内容）、`sessions`（学员会话：步号、状态位掩码、已走路径、绑定版本，复盘分叉溯源列 `parent_code` / `fork_step_no` / `root_code`，房间会话标记列 `room_code`，训练任务列 `task_id` / `task_trainee_id` / `attempt_no`——非空即为任务的计次尝试会话）、`rooms`（共识演练房间：加入码、主持凭证、绑定冻结版本与共享会话，限时模式列 `step_duration`，NULL 为旧用法；盲投列 `blind_vote`，1=盲投、0=公开，存量房间默认 0）、`room_members`（房间成员及成员凭证）、`room_votes`（按「房间 × 步号 × 成员」记票，每人每步只计最后一票）、`room_steps`（限时房间每步一条计时记录：持久化截止时间 `deadline_ms`、状态 `open`/`awaiting_reopen`、重开次数）、`room_settlements`（每步结算留痕：获胜选项与各选项票数，`kind` 为 `manual`/`auto`；任何房间都不留存姓名↔选项对应）、`tasks`（训练任务：管理凭证 `admin_token`、绑定冻结版本、截止时间 `deadline_ms`、每人最多尝试次数 `max_attempts`、及格分 `pass_score`）、`task_trainees`（任务学员名单：姓名任务内唯一，个人参与凭证 `token` 全局唯一）、`task_attempt_voids`（尝试作废留痕：主键为被作废尝试的会话码，记录任务/学员/尝试序号/非空原因/操作凭证与时间；同尝试同原因据此幂等返回，异原因据此报冲突）。另有唯一部分索引 `idx_sessions_task_active`（`sessions(task_id, task_trainee_id) WHERE status='active'`）保证同一学员在同一任务下至多一条进行中的尝试会话。
 
 ---
 
@@ -231,9 +231,15 @@ npm start
    - 演练过程与普通单人演练一致：沿任务**冻结版本**的选项条件、步号与计分规则推进，每步可见本步得分与累计分；到达结局后页面提示本次总分与**是否达到及格分**；
    - 任务会话**只能凭本人参与凭证查看和操作**：普通会话列表不出现任务会话；普通会话入口（查询/推进/分叉/对照）对任务会话一律拒绝（`401 TASK_TOKEN_INVALID` / `409 TASK_SESSION_FORK_FORBIDDEN`）。
 3. **管理成绩（培训师）**：凭「任务编号 + 管理凭证」进入管理视图（每 4 秒自动刷新）：
-   - 汇总：学员人数、已开始人数、**已及格人数**、尝试总次数；
-   - 逐人：参与凭证（便于补发）、已用次数、当前状态、**每次尝试记录**（状态/步数/得分/时间）、**最高已结束总分**与**是否达到及格分**；
-   - **成绩口径**：只统计**已结束**的尝试；进行中的尝试不计入；**无已结束尝试时成绩为空**（`bestScore=null`、`passed=null`）。
+   - 汇总：学员人数、已开始人数、**已及格人数**、尝试总次数（含作废）、**有效占用总数**、**已作废数**；
+   - 逐人：参与凭证（便于补发）、已用总次数 / **有效占用** / 剩余次数、当前状态、**每次尝试记录**（状态/步数/得分/时间，作废记录带 **⛔ 作废标记与原因**）、**最高“有效已结束”总分**与**是否达到及格分**；
+   - **成绩口径**：只统计**有效（未作废）且已结束**的尝试；进行中、已作废的尝试均不计入；**无有效已结束尝试时成绩为空**（`bestScore=null`、`passed=null`）。
+4. **作废某次尝试（监考异常，培训师）**：当某次**已结束**尝试因监考异常无效时，在管理视图该学员的尝试明细里点「⛔ 作废（监考异常）」（或调用作废接口），填写**非空原因**即可：
+   - 作废**只改变有效性**：原会话路径、得分、绑定冻结版本与**历史尝试序号全部保留**（可凭本人凭证照常查看，记录带作废标记），不删除会话；
+   - 该次立即**释放名额**——只有有效（未作废）尝试占用次数、参与最高已结束分与及格判定；之后学员可再开新尝试，**新序号继续递增、不复用作废序号**；
+   - **已用总次数**（含作废）与**有效占用数**分别展示，**剩余次数按有效占用计算**；
+   - **同一次尝试、同一原因重复提交**：幂等返回原作废记录（不重复释放名额、不留第二条记录）；**原因不同**：返回冲突 `TASK_VOID_REASON_CONFLICT` 且不改数据；
+   - **进行中的尝试不能作废**（须等其结束）；**作废不改变任务截止时间**——截止后即使有名额也不能补做新尝试，只能续做原有进行中尝试。
 
 ---
 
@@ -293,7 +299,8 @@ npm start
 | POST | `/api/tasks/:id/start` | `{token}` 学员开始或续做：有未结束尝试返回原会话（200，`resumed=true`，不扣次数）；否则新建一次尝试（201）；次数耗尽/已截止/凭证无效明确反馈 |
 | GET | `/api/tasks/:id/my` | `?token=` 学员视角：我的尝试记录与进行中的会话快照 |
 | POST | `/api/tasks/:id/move` | `{token, optionId, stepNo}` 在本人进行中的任务会话里执行一步（沿用冻结版本规则） |
-| GET | `/api/tasks/:id/manage` | `?token=管理凭证` 成绩报告：各人尝试记录、最高已结束总分、是否达到及格分（无已结束尝试成绩为空） |
+| GET | `/api/tasks/:id/manage` | `?token=管理凭证` 成绩报告：各人尝试记录（含作废标记/原因）、最高**有效已结束**总分、是否达到及格分、已用/有效占用/剩余（无有效已结束尝试成绩为空） |
+| POST | `/api/tasks/:id/void` | `{adminToken, token, attemptNo, reason}` 培训师作废某次**已结束**尝试（监考异常，非空原因）；首次 201 返回作废记录+更新后的该学员个人成绩与汇总；同原因重试 200 幂等返回原记录；异原因 409 `TASK_VOID_REASON_CONFLICT`；进行中 409 `TASK_ATTEMPT_ACTIVE`；非法/跨任务凭证 401、序号不存在 404 均不改数据 |
 
 ### 评分相关字段（随版本冻结，旧版本/旧会话自动按 0 分兜底）
 
@@ -749,9 +756,17 @@ curl -s -X POST localhost:8080/api/rooms/a1b2c3d4e5/reopen \
   `POST /api/sessions/:code/move`（请求体 `token`）无凭证/错凭证 `401 TASK_TOKEN_INVALID`；
   任务会话**不得复盘分叉**（`409 TASK_SESSION_FORK_FORBIDDEN`），家族对照同样须凭证。
 - **成绩报告**：`GET /api/tasks/:id/manage?token=管理凭证`
-  - 逐人返回：参与凭证（便于补发）、已用/剩余次数、当前进行中次数、**每次尝试记录**
-    （状态/步数/总分/起止时间）、**最高已结束总分 `bestScore`** 与**是否及格 `passed`**；
-  - **无已结束尝试时成绩为空**：`bestScore=null`、`passed=null`；进行中的尝试不计入及格判定。
+  - 逐人返回：参与凭证（便于补发）、**已用总次数 `attemptsUsed`（含已作废）/ 有效占用 `validAttemptsUsed` / 剩余 `attemptsLeft`（按有效占用）**、当前进行中次数、作废数 `voidedCount`、**每次尝试记录**（状态/步数/总分/起止时间；作废记录另含 `voided=true`、`voidReason`、`voidedAt`）、**最高“有效已结束”总分 `bestScore`** 与**是否及格 `passed`**；
+  - **无有效已结束尝试时成绩为空**：`bestScore=null`、`passed=null`；进行中与已作废尝试都不计入最高/及格判定；
+  - 汇总新增 `validAttemptsTotal`（有效占用总数）与 `voidedCount`（已作废数）；原 `attemptsTotal` 为含作废的尝试总次数。
+- **作废尝试（监考异常）**：`POST /api/tasks/:id/void` `{adminToken, token, attemptNo, reason}`
+  - 凭证：`adminToken`=管理凭证，`token`=**该学员本人**的参与凭证，`attemptNo`=尝试序号（≥1 整数），`reason`=**非空**作废原因；
+  - **首次作废返回 201**：`voidRecord`（作废记录：任务/学员/尝试序号/会话码/原因/作废时间）、`trainee`（更新后的该学员个人成绩，结构同管理视图逐人）、`summary`（更新后的任务汇总）；
+  - **只改有效性**：会话的路径、得分、绑定冻结版本、历史尝试序号保留；仅有效尝试占名额/参与最高已结束分与及格；名额立即释放，新尝试序号继续递增不复用；
+  - **幂等与冲突**：同一尝试同原因（允许首尾空白差异）重试返回 **200** 且 `idempotent=true`、回原记录，不重复释放名额；异原因返回 **409** `TASK_VOID_REASON_CONFLICT`（带 `existingVoid` 原记录，不改数据）；
+  - **进行中尝试 409** `TASK_ATTEMPT_ACTIVE` 不得作废；非法/跨任务参与凭证 401 `TASK_TOKEN_INVALID`、错误管理凭证 401 `TASK_ADMIN_TOKEN_INVALID`、序号非整数 400 `TASK_ATTEMPT_NO_INVALID`、空原因 400 `TASK_VOID_REASON_REQUIRED`、序号不存在 404 `TASK_ATTEMPT_NOT_FOUND`，均不改变任何数据；
+  - 作废不改变截止时间：截止后即使因此释放了名额，仍不能开新尝试（`TASK_DEADLINE_PASSED`），只可续做原有进行中尝试。
+  - 作废后任务会话快照（`GET /api/tasks/:id/my` 的 `attempts[]`、`GET /api/sessions/:code` 本人视图、管理视图 `attempts[]`）均带 `voided` / `voidReason` / `voidedAt`；`start` / `my` / `move` 响应在原 `attemptsUsed`、`attemptsLeft` 之外**新增** `validAttemptsUsed`（有效占用数），旧字段含义与类型保持兼容。
 
 ```bash
 # 0) 培训师建立任务（deadline 为 epoch 毫秒或 ISO 串；须晚于当前时间）
@@ -803,15 +818,18 @@ curl -s 'localhost:8080/api/tasks/a1b2c3d4e5/my?token=ptk_111…'
 # 6) 培训师凭管理凭证查看成绩
 curl -s 'localhost:8080/api/tasks/a1b2c3d4e5/manage?token=adm_9f8e…'
 # -> { "ok":true, "task":{…},
-#      "summary":{"traineeCount":2,"startedCount":2,"passedCount":1,"attemptsTotal":3},
+#      "summary":{"traineeCount":2,"startedCount":2,"passedCount":1,
+#                 "attemptsTotal":3,"validAttemptsTotal":3,"voidedCount":0},
 #      "trainees":[
-#        { "name":"张三", "token":"ptk_111…", "attemptsUsed":2, "attemptsLeft":0,
-#          "activeAttemptNo":null, "bestScore":10, "passed":true,
-#          "attempts":[ {"attemptNo":1,"status":"ended","stepNo":4,"totalScore":10,…},
+#        { "name":"张三", "token":"ptk_111…", "attemptsUsed":2, "validAttemptsUsed":2,
+#          "attemptsLeft":0, "voidedCount":0, "activeAttemptNo":null,
+#          "bestScore":10, "passed":true,
+#          "attempts":[ {"attemptNo":1,"status":"ended","stepNo":4,"totalScore":10,
+#                        "voided":false,"voidReason":null,"voidedAt":null,…},
 #                       {"attemptNo":2,"status":"ended","stepNo":1,"totalScore":-10,…} ] },
-#        { "name":"李四", "token":"ptk_222…", "attemptsUsed":0, "attemptsLeft":2,
-#          "activeAttemptNo":null, "bestScore":null, "passed":null,   # 无已结束尝试→成绩为空
-#          "attempts":[] } ] }
+#        { "name":"李四", "token":"ptk_222…", "attemptsUsed":0, "validAttemptsUsed":0,
+#          "attemptsLeft":2, "activeAttemptNo":null, "bestScore":null, "passed":null,
+#          "attempts":[] } ] }   # 无有效已结束尝试→成绩为空
 
 # 7) 权限边界：任务会话在普通入口一律需本人凭证
 curl -s localhost:8080/api/sessions/ff00ee…
@@ -820,9 +838,49 @@ curl -s 'localhost:8080/api/sessions/ff00ee…?token=ptk_111…'   # 本人凭�
 curl -s -X POST localhost:8080/api/sessions/ff00ee…/fork \
   -H 'Content-Type: application/json' -d '{"forkStepNo":0,"observedStepNo":1}'
 # 409 { "errorCode":"TASK_SESSION_FORK_FORBIDDEN", … }           # 计次尝试不得分叉
+
+# 8) 作废张三的第 1 次已结束尝试（监考异常；须管理凭证 + 该学员参与凭证 + 序号 + 非空原因）
+curl -s -X POST localhost:8080/api/tasks/a1b2c3d4e5/void \
+  -H 'Content-Type: application/json' \
+  -d '{"adminToken":"adm_9f8e…","token":"ptk_111…","attemptNo":1,"reason":"监考画面中断，成绩无效"}'
+# 201 -> { "ok":true, "idempotent":false,
+#          "voidRecord":{"taskId":"a1b2c3d4e5","traineeName":"张三","attemptNo":1,
+#                        "sessionCode":"ff00ee…","reason":"监考画面中断，成绩无效",
+#                        "voidedAt":"2026-10-05 10:20:31"},
+#          "trainee":{ "name":"张三", "attemptsUsed":2, "validAttemptsUsed":1, "attemptsLeft":1,
+#                      "voidedCount":1, "bestScore":-10, "passed":false,
+#                      "attempts":[ {"attemptNo":1,"status":"ended","totalScore":10,
+#                                    "voided":true,"voidReason":"监考画面中断，成绩无效",…},
+#                                   {"attemptNo":2,"status":"ended","totalScore":-10,"voided":false,…} ] },
+#          "summary":{ "attemptsTotal":2, "validAttemptsTotal":1, "voidedCount":1, "passedCount":0, … } }
+#   —— 原会话路径/得分/冻结版本/尝试序号 1 全部保留；名额释放后学员可再开，新序号为 3（不复用 1）。
+
+# 8b) 同一次、同原因重试：200 幂等返回原记录（不重复释放名额、不留第二条）
+curl -s -X POST localhost:8080/api/tasks/a1b2c3d4e5/void \
+  -H 'Content-Type: application/json' \
+  -d '{"adminToken":"adm_9f8e…","token":"ptk_111…","attemptNo":1,"reason":"监考画面中断，成绩无效"}'
+# 200 -> { "ok":true, "idempotent":true, "voidRecord":{ …同一条记录… }, "trainee":{…}, "summary":{…} }
+
+# 8c) 同一次但原因不同：409 冲突，携带原记录，不改任何数据
+# 409 { "errorCode":"TASK_VOID_REASON_CONFLICT",
+#       "error":"第 1 次尝试已作废，原因为「监考画面中断，成绩无效」，与本次提交原因「…」不一致…",
+#       "existingVoid":{"attemptNo":1,"sessionCode":"ff00ee…","reason":"监考画面中断，成绩无效",…} }
+
+# 8d) 作废进行中尝试：409；空原因：400；非法/跨任务凭证：401；序号不存在：404
+# 409 { "errorCode":"TASK_ATTEMPT_ACTIVE", … }
+# 400 { "errorCode":"TASK_VOID_REASON_REQUIRED", … }
+# 401 { "errorCode":"TASK_TOKEN_INVALID" } / { "errorCode":"TASK_ADMIN_TOKEN_INVALID" }
+# 404 { "errorCode":"TASK_ATTEMPT_NOT_FOUND", … }
+
+# 9) 学员本人查看：作废记录带标记（仍可看到原得分，但不参与最高/及格判定）
+curl -s 'localhost:8080/api/tasks/a1b2c3d4e5/my?token=ptk_111…'
+# -> { "attemptsUsed":2, "validAttemptsUsed":1, "attemptsLeft":1,
+#       "attempts":[ {"attemptNo":1,"status":"ended","totalScore":10,
+#                     "voided":true,"voidReason":"监考画面中断，成绩无效","voidedAt":"…",…},
+#                    {"attemptNo":2,"status":"ended","totalScore":-10,"voided":false,…} ], … }
 ```
 
-错误码一览（除注明外均为 `409`；配置类为 `400`，凭证类为 `401`）：
+错误码一览（除注明外均为 `409`；配置/参数类为 `400`，凭证类为 `401`，不存在类为 `404`）：
 
 | 情况 | errorCode |
 | --- | --- |
@@ -832,13 +890,18 @@ curl -s -X POST localhost:8080/api/sessions/ff00ee…/fork \
 | 名单为空/含空姓名或超长（`400`） | `TASK_TRAINEES_INVALID` |
 | 名单姓名重复（`400`） | `TASK_TRAINEE_DUPLICATE` |
 | 任务不存在（`404`） | `TASK_NOT_FOUND` |
-| 参与凭证无效（`401`） | `TASK_TOKEN_INVALID` |
+| 参与凭证无效/跨任务（`401`） | `TASK_TOKEN_INVALID` |
 | 管理凭证无效（`401`） | `TASK_ADMIN_TOKEN_INVALID` |
-| 次数耗尽 | `TASK_ATTEMPTS_EXHAUSTED` |
+| 次数耗尽（按有效占用计） | `TASK_ATTEMPTS_EXHAUSTED` |
 | 截止后开新尝试（续做旧会话不受限） | `TASK_DEADLINE_PASSED` |
 | 无进行中尝试时推进 | `TASK_NO_ACTIVE_ATTEMPT` |
 | 任务会话走普通入口无凭证（`401`） | `TASK_TOKEN_INVALID` |
 | 任务会话尝试复盘分叉 | `TASK_SESSION_FORK_FORBIDDEN` |
+| 作废原因为空/非文本（`400`） | `TASK_VOID_REASON_REQUIRED` |
+| 作废尝试序号非 ≥1 整数（`400`） | `TASK_ATTEMPT_NO_INVALID` |
+| 作废目标尝试不存在（`404`） | `TASK_ATTEMPT_NOT_FOUND` |
+| 作废仍在进行中的尝试 | `TASK_ATTEMPT_ACTIVE` |
+| 已作废但本次原因与原记录不同 | `TASK_VOID_REASON_CONFLICT` |
 
 兼容说明：
 
@@ -846,7 +909,11 @@ curl -s -X POST localhost:8080/api/sessions/ff00ee…/fork \
   `GET /api/sessions` 列表、照常推进与分叉；变化仅两点——列表不再包含任务会话（任务会话只能经
   任务入口凭凭证访问），以及普通入口对任务会话强制验凭证（普通会话 `task_id` 为 NULL，不受影响）；
 - 会话快照新增 `taskId` / `attemptNo`（非任务会话为 `null`），为纯增量字段；
-- 老库自动建表（`tasks` / `task_trainees`）与加列迁移（`sessions.task_id` / `task_trainee_id` /
+- **作废为纯增量扩展**：新增 `POST /api/tasks/:id/void` 与 `task_attempt_voids` 表（老库启动时自动建表）；
+  `start` / `my` / `move` / `manage` 的**既有字段全部保留**，仅新增 `validAttemptsUsed`（有效占用数）、
+  管理视图汇总 `validAttemptsTotal` / `voidedCount`、逐人 `voidedCount`，以及尝试记录与会话快照上的
+  `voided` / `voidReason` / `voidedAt`；作废前 `attemptsUsed` 即等于现 `validAttemptsUsed`，旧调用不受影响；
+- 老库自动建表（`tasks` / `task_trainees` / `task_attempt_voids`）与加列迁移（`sessions.task_id` / `task_trainee_id` /
   `attempt_no`），并创建「同一人至多一条进行中尝试」的唯一部分索引。
 
 ---
@@ -860,17 +927,18 @@ curl -s -X POST localhost:8080/api/sessions/ff00ee…/fork \
 ├── package.json / package-lock.json
 ├── server/
 │   ├── server.js      # Express 路由（编排 / 发布 / 会话 / 复盘分叉 / 处置覆盖报告 / 共识演练房间 / 训练任务接口），限时房到期补办调度；普通会话入口对任务会话强制验凭证
-│   ├── db.js          # SQLite 连接、建表（含老库加列迁移：rooms.step_duration / rooms.blind_vote / room_steps / room_settlements.kind / sessions.task_* 与任务表）、id 生成
+│   ├── db.js          # SQLite 连接、建表（含老库加列迁移：rooms.step_duration / rooms.blind_vote / room_steps / room_settlements.kind / sessions.task_* 与任务表、task_attempt_voids 作废留痕表）、id 生成
 │   ├── scenario.js    # 草稿校验 + 状态空间可达性/死路/循环分析
 │   ├── session.js     # 会话快照、“带步号的一步”推进（房间会话拒绝单人入口、任务会话须本人凭证）、forkSession 分叉、loadLineage 对照树
 │   ├── room.js        # 共识演练房间：开启（可选限时/盲投）/加入/投票改票/主持结算/到点自动结算/零票暂停与重开/到期补办 sweep/盲投脱敏房间快照
-│   ├── task.js        # 训练任务：建任务（整次校验）/开始或续做（原会话返回、计次、截止控制）/任务内推进/学员视角/管理成绩报告
+│   ├── task.js        # 训练任务：建任务（整次校验）/开始或续做（原会话返回、有效占用计次、截止控制）/任务内推进/学员视角/管理成绩报告/尝试作废（只改有效性、同原因幂等异原因冲突、序号不复用）
 │   ├── coverage.js    # 处置覆盖报告：覆盖项枚举 + 按家族去重的已完成路径回放（损坏整体报错）
 │   └── seed.js        # 内置示例情境（首启写入）
 ├── scripts/
 │   ├── test-timed-room.js  # 限时房间端到端验证（临时库：开房校验/提前结算/到点自动结算/零票重开/旧用法兼容/防重复推进）
 │   ├── test-blind-room.js  # 盲投房间端到端验证（临时库：blind 布尔校验不建房/结算前三视图脱敏/学员 myVote/主持成员名单/结算公布票数无姓名/盲投×限时暂停重开/公开房兼容）
-│   └── test-task.js        # 训练任务端到端验证（临时库+真实 HTTP：非法配置整次拒绝/开始续做计次/截止控制/权限边界/并发不重复建会话/管理成绩/冻结版本与旧用法兼容）
+│   ├── test-task.js        # 训练任务端到端验证（临时库+真实 HTTP：非法配置整次拒绝/开始续做计次/截止控制/权限边界/并发不重复建会话/管理成绩/冻结版本与旧用法兼容）
+│   └── test-void.js        # 尝试作废端到端验证（临时库+真实 HTTP：只改有效性/路径得分序号保留/有效占用释放/序号不复用/同原因幂等异原因冲突/进行中拒作废/非法跨任务凭证/截止不可补做/个人与管理视图同步）
 ├── public/
 │   ├── index.html     # 单页界面（学员演练 / 共识演练 / 训练任务 / 培训师编排四个页签，编排内含处置覆盖报告视图）
 │   ├── styles.css

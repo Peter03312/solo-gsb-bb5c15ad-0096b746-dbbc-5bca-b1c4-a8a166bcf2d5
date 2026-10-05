@@ -151,6 +151,25 @@ function initSchema() {
   );
 
   CREATE INDEX IF NOT EXISTS idx_task_trainees_task ON task_trainees(task_id);
+
+  -- 训练任务尝试作废留痕：培训师发现某条“已结束”尝试因监考异常无效时，可凭任务编号、
+  -- 管理凭证、学员参与凭证、尝试序号与非空原因将其作废。
+  -- 作废只改“有效性”：会话原路径/得分/绑定冻结版本/历史尝试序号一律保留；
+  -- 仅“有效”（未作废）尝试占用次数、参与最高已结束分与及格判定；新尝试序号继续递增，
+  -- 不作废序号不回收。同一尝试同原因重试返回原记录（幂等，不重复释放名额），异原因冲突。
+  -- 主键即尝试会话码：每次尝试至多一条作废记录，事务内先查后插，并发作废只有一个成功。
+  CREATE TABLE IF NOT EXISTS task_attempt_voids (
+    session_code    TEXT PRIMARY KEY REFERENCES sessions(code) ON DELETE CASCADE,
+    task_id         TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    task_trainee_id INTEGER NOT NULL REFERENCES task_trainees(id) ON DELETE CASCADE,
+    attempt_no      INTEGER NOT NULL,        -- 被作废尝试的历史序号（保留，不回收复用）
+    reason          TEXT NOT NULL,           -- 非空作废原因（监考异常说明）
+    admin_token_seen TEXT NOT NULL,          -- 留痕：操作时出示的管理凭证（不对外返回）
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_task_voids_trainee
+    ON task_attempt_voids(task_id, task_trainee_id);
   `);
 
   // 老库迁移：补入复盘分叉所需的溯源列
